@@ -1,0 +1,18 @@
+# ROS2 build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Environment / secrets
+.env
+*.pyc
+__pycache__/
+
+# Logs (regenerated on each test run)
+logs/
+ros2_ws/*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp

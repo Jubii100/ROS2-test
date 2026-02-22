@@ -1,0 +1,19 @@
+FROM ros:jazzy-ros-base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip python3-colcon-common-extensions \
+        ros-jazzy-std-srvs ros-jazzy-geometry-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws
+COPY ros2_ws/src/cell_sim /ws/src/cell_sim
+
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/jazzy/setup.bash && \
+    colcon build --packages-select cell_sim && \
+    echo "source /opt/ros/jazzy/setup.bash"  >> /ros_entrypoint.sh && \
+    echo "source /ws/install/setup.bash"     >> /ros_entrypoint.sh && \
+    echo 'exec "$@"'                        >> /ros_entrypoint.sh
+
+ENTRYPOINT ["/bin/bash", "/ros_entrypoint.sh"]
+CMD ["ros2", "launch", "cell_sim", "cell_sim.launch.py"]

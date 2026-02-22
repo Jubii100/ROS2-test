@@ -1,0 +1,7 @@
+# Request the cell supervisor to execute a plan step
+robot_cell_interfaces/PlanStep step
+---
+bool success
+string message
+string resulting_robot_status
+string resulting_gripper_state

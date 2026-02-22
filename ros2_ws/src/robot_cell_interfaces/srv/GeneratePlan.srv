@@ -1,0 +1,6 @@
+# Request a plan from the AI planner
+string goal_description
+---
+robot_cell_interfaces/PlanStep[] steps
+bool success
+string message

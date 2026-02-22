@@ -1,0 +1,69 @@
+##############################################################################
+#  Robot Cell AI Planner — Docker Compose
+#
+#  Services:
+#    ros2_cell      – ROS2 sensor simulator + cell state node (edge device)
+#    planner_api    – FastAPI + ROS2 bridge + Anthropic LLM client
+#
+#  Usage:
+#    cp .env.example .env        # fill in your ANTHROPIC_API_KEY
+#    docker compose up --build
+#
+#  The planner_api container runs the ROS2 nodes internally (via the
+#  entrypoint) so both services share a DDS domain (ROS_DOMAIN_ID=42).
+##############################################################################
+
+services:
+  # ── ROS2 Cell (edge simulation) ──────────────────────────────────────────
+  ros2_cell:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros2_cell
+    container_name: ros2_cell
+    environment:
+      - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=0
+    networks:
+      - cell_net
+    healthcheck:
+      test: ["CMD", "bash", "-c", "source /opt/ros/jazzy/setup.bash && ros2 topic list | grep /cell/state"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 8s
+    restart: unless-stopped
+
+  # ── Planner API (FastAPI + LLM) ─────────────────────────────────────────
+  planner_api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.planner_api
+    container_name: planner_api
+    ports:
+      - "8000:8000"
+    environment:
+      - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=0
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - LLM_API_KEY=${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
+      - LLM_MODEL=${LLM_MODEL:-claude-sonnet-4-20250514}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
+      - LOG_FILE=/app/logs/api_server.log
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - cell_net
+    depends_on:
+      ros2_cell:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  cell_net:
+    driver: bridge

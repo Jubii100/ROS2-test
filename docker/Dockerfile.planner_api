@@ -1,0 +1,22 @@
+FROM ros:jazzy-ros-base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip python3-colcon-common-extensions curl \
+        ros-jazzy-std-srvs ros-jazzy-geometry-msgs \
+    && pip3 install --break-system-packages fastapi uvicorn httpx \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws
+COPY ros2_ws/src/cell_sim /ws/src/cell_sim
+
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/jazzy/setup.bash && \
+    colcon build --packages-select cell_sim
+
+RUN mkdir -p /app/logs
+
+COPY docker/entrypoint_api.sh /entrypoint_api.sh
+RUN chmod +x /entrypoint_api.sh
+
+EXPOSE 8000
+ENTRYPOINT ["/entrypoint_api.sh"]

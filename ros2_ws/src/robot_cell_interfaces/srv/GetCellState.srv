@@ -1,0 +1,5 @@
+# Request the current cell state
+---
+robot_cell_interfaces/CellState state
+bool success
+string message
