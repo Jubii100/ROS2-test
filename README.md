@@ -415,16 +415,3 @@ playground/
 | **Cost/latency instrumentation** | Every Anthropic call logs tokens, cost estimate, and wall-clock latency. Essential for production budget monitoring |
 | **Safe-stop fallback** | On total Brain failure (LLM down, 2 failed attempts): return WAIT with speed=0. The Nervous System holds position — no unsafe motion |
 
----
-
-## What I'd Improve for Production
-
-1. **LangGraph for the Brain** — replace the hand-rolled state machine with a LangGraph `StateGraph` for visual debugging and built-in checkpointing
-2. **gRPC instead of REST** between user and Brain for lower latency + strong typing
-3. **OpenTelemetry tracing** with trace-id propagation across Nervous System → Brain → Anthropic
-4. **Prometheus `/metrics` endpoint** for Grafana dashboards (latency histograms, cost counters, safety rejection rate)
-5. **Plan caching** — hash (goal + constraints + discretized state) → skip LLM for repeated requests
-6. **Circuit breaker** on the Anthropic client to fail fast during outages
-7. **Local fallback model** (Ollama with quantized LLaMA) as a secondary Brain when cloud API is unavailable
-8. **ROS2 action server** instead of services for long-running plan execution with progress feedback
-9. **Integration tests** with a simulated robot (MoveIt + Gazebo) to validate plans in physics before real execution
