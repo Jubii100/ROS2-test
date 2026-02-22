@@ -4,6 +4,207 @@ A ROS2-based robot cell simulation with a strict architectural boundary between 
 
 ---
 
+## Test Results — All 4 Tasks Passed
+
+Everything below was produced by a **single command** (`bash run_tests.sh`) that launches the full system from scratch — ROS2 nodes, FastAPI server, Anthropic LLM — runs every test, and tears down on exit. No manual steps, no separate terminals, no pre-existing processes.
+
+```
+╔══════════════════════════════════════════════════════════════════════╗
+║  ✓  ALL 4 TASKS PASSED — 2026-02-22 15:16:06                      ║
+║  LLM: anthropic claude-sonnet-4-20250514 (real API calls)          ║
+║  Safety: speed + z-bound constraints verified with real LLM         ║
+╚══════════════════════════════════════════════════════════════════════╝
+```
+
+| Task | Description | Result |
+|------|-------------|--------|
+| **Task 1** | ROS2 basics: topics, services, sensor simulation | **PASSED** |
+| **Task 2** | FastAPI + ROS2 bridge + Anthropic LLM call | **PASSED** |
+| **Task 3** | Multi-agent orchestration + deterministic safety gate | **PASSED** |
+| **Task 4** | Docker deployment design + cost/latency monitoring | **PASSED** |
+
+### Task 1 — ROS2 Basics (Nervous System)
+
+```
+✓ TASK 1 — ALL CHECKS PASSED
+```
+
+Verified live by `run_tests.sh`:
+
+```
+Active ROS2 nodes:   /sensor_sim_node, /cell_state_node, /api_bridge_node
+Topics:              /perception/object_pose, /cell/state
+Services:            /cell/get_state
+
+ros2 service call /cell/get_state std_srvs/srv/Trigger "{}"
+→ success=True, message='{"timestamp":"...","object_pose":{"x":0.097715,"y":-0.021253,"z":0.05,...},"frame_id":"world"}'
+```
+
+### Task 2 — API + LLM Call (Brain ↔ Nervous System)
+
+```
+✓ TASK 2 — ALL CHECKS PASSED
+```
+
+```
+POST /plan → Anthropic Claude → 7-step pick-and-place plan
+  LLM response in 10.32s
+  Anthropic usage: tokens_in=446  tokens_out=760  est_cost=$0.012738
+```
+
+### Task 3 — Orchestrator + Safety Gate (Brain with Deterministic Guard)
+
+```
+✓ TASK 3 — ALL CHECKS PASSED
+```
+
+| Test | Constraint | Attempt 1 | Attempt 2 | Result |
+|------|-----------|-----------|-----------|--------|
+| 3a — generous | max_speed=0.5, z_max=1.0 | PASS | — | `passed_on_attempt: 1` |
+| 3b — tight speed | max_speed=0.2, z_max=1.0 | PASS | — | `passed_on_attempt: 1` |
+| **3c — z-bound** | **z_max=0.08, goal demands z=0.5** | **REJECTED** | **CORRECTED** | **`passed_on_attempt: 2`** |
+| 3d — tight z | z_max=0.03 | PASS | — | `passed_on_attempt: 1` |
+
+### Task 4 — Deployment & Anthropic Cost/Latency Metrics
+
+```
+✓ TASK 4 — ALL CHECKS PASSED
+```
+
+| Request ID | Latency | Tokens in | Tokens out | Est. Cost |
+|------------|---------|-----------|------------|-----------|
+| 6f76e2fa | 10.32s | 446 | 760 | $0.0127 |
+| c8c6d45c | 9.78s | 446 | 757 | $0.0127 |
+| 6fdafb14 | 9.02s | 446 | 756 | $0.0127 |
+| 75c23fe2 (plan) | 5.24s | 495 | 285 | $0.0058 |
+| 75c23fe2 (replan) | 5.30s | 561 | 281 | $0.0059 |
+| f9715f9d | 6.54s | 453 | 405 | $0.0074 |
+| **Total (6 calls)** | **~46s** | **2,847** | **3,244** | **$0.057** |
+
+---
+
+## Actual Logs — Full Evidence
+
+### Z-Bound Violation → Rejection → Correction (Task 3c)
+
+The LLM was instructed to plan for `z=0.5`, but constraints set `allowed_z_max=0.08`. The safety gate caught it on attempt 1 and the LLM corrected on attempt 2. Extracted from `ros2_ws/api_server.log`:
+
+```
+[75c23fe2059c] State → PLANNING  (attempt 0)
+[75c23fe2059c] LLM call attempt 1/2  provider=anthropic
+  Anthropic usage  model=claude-sonnet-4-20250514  tokens_in=495  tokens_out=285  est_cost=$0.005760
+[75c23fe2059c] LLM response in 5.24s  provider=anthropic
+[75c23fe2059c] Plan parsed — 2 steps
+[75c23fe2059c] State → SAFETY_CHECK  (attempt 1)
+  Safety gate found 1 violation(s):
+    • Step 1 (MOVE): target z=0.5 above allowed_z_max 0.08          ← CAUGHT
+[75c23fe2059c] State → REPLANNING  (attempt 1)
+[75c23fe2059c] LLM call attempt 1/2  provider=anthropic
+  Anthropic usage  model=claude-sonnet-4-20250514  tokens_in=561  tokens_out=281  est_cost=$0.005898
+[75c23fe2059c] LLM response in 5.30s  provider=anthropic
+[75c23fe2059c] Replan parsed — 2 steps
+[75c23fe2059c] State → SAFETY_CHECK  (attempt 2)
+  Safety gate: all checks passed                                     ← FIXED
+[75c23fe2059c] State → ACCEPTED  (attempt 2)
+[75c23fe2059c] Plan ACCEPTED on attempt 2
+Orchestrator done — passed_safety=True  attempt=2
+  states=PLANNING → SAFETY_CHECK → REPLANNING → SAFETY_CHECK → ACCEPTED
+```
+
+### API Server Startup + Full Call Trace
+
+Complete internal logs from a test run (`ros2_ws/api_server.log`):
+
+```
+2026-02-22 15:13:00  INFO   cell_sim.api              Starting ROS2 bridge …
+2026-02-22 15:13:00  INFO   cell_sim.api.ros2_bridge   ROS2 bridge initialised — background spin thread running
+2026-02-22 15:13:00  INFO   cell_sim.api              FastAPI ready
+
+2026-02-22 15:15:19  INFO   cell_sim.api              [6f76e2fa] POST /plan  goal='Pick the object and place it in bin A'
+2026-02-22 15:15:19  INFO   cell_sim.api              [6f76e2fa] Cell state fetched: {"object_pose":{"x":0.087,"y":-0.049,"z":0.05,...}}
+2026-02-22 15:15:19  INFO   cell_sim.api.llm_client   [6f76e2fa] LLM call attempt 1/2  provider=anthropic
+2026-02-22 15:15:29  INFO   cell_sim.api.llm_client     Anthropic usage  tokens_in=446  tokens_out=760  est_cost=$0.012738
+2026-02-22 15:15:29  INFO   cell_sim.api.llm_client   [6f76e2fa] LLM response in 10.32s  provider=anthropic
+2026-02-22 15:15:29  INFO   cell_sim.api              [6f76e2fa] Plan validated — 7 steps
+
+2026-02-22 15:15:30  INFO   cell_sim.api              [c8c6d45c] POST /orchestrate — generous constraints
+2026-02-22 15:15:40  INFO   cell_sim.api.llm_client     Anthropic usage  tokens_in=446  tokens_out=757  est_cost=$0.012693
+2026-02-22 15:15:40  INFO   cell_sim.api.safety        Safety gate: all checks passed
+2026-02-22 15:15:40  INFO   cell_sim.api.orchestrator  Plan ACCEPTED on attempt 1
+
+2026-02-22 15:15:40  INFO   cell_sim.api              [6fdafb14] POST /orchestrate — tight speed (max=0.2)
+2026-02-22 15:15:49  INFO   cell_sim.api.llm_client     Anthropic usage  tokens_in=446  tokens_out=756  est_cost=$0.012678
+2026-02-22 15:15:49  INFO   cell_sim.api.safety        Safety gate: all checks passed
+2026-02-22 15:15:49  INFO   cell_sim.api.orchestrator  Plan ACCEPTED on attempt 1
+
+2026-02-22 15:15:49  INFO   cell_sim.api              [75c23fe2] POST /orchestrate — z-bound conflict (z=0.5 vs max=0.08)
+2026-02-22 15:15:54  WARNING cell_sim.api.safety        Safety gate found 1 violation(s):
+2026-02-22 15:15:54  WARNING cell_sim.api.safety          • Step 1 (MOVE): target z=0.5 above allowed_z_max 0.08
+2026-02-22 15:16:00  INFO   cell_sim.api.safety        Safety gate: all checks passed  (after replan)
+2026-02-22 15:16:00  INFO   cell_sim.api.orchestrator  Plan ACCEPTED on attempt 2
+
+2026-02-22 15:16:00  INFO   cell_sim.api              [f9715f9d] POST /orchestrate — tight z (max=0.03)
+2026-02-22 15:16:06  INFO   cell_sim.api.llm_client     Anthropic usage  tokens_in=453  tokens_out=405  est_cost=$0.007434
+2026-02-22 15:16:06  INFO   cell_sim.api.safety        Safety gate: all checks passed
+2026-02-22 15:16:06  INFO   cell_sim.api.orchestrator  Plan ACCEPTED on attempt 1
+```
+
+### Latency per Anthropic Call (from logs)
+
+```
+[6f76e2faebcd] LLM response in 10.32s  provider=anthropic
+[c8c6d45c5d54] LLM response in  9.78s  provider=anthropic
+[6fdafb145f18] LLM response in  9.02s  provider=anthropic
+[75c23fe2059c] LLM response in  5.24s  provider=anthropic
+[75c23fe2059c] LLM response in  5.30s  provider=anthropic  (replan after rejection)
+[f9715f9de5fe] LLM response in  6.54s  provider=anthropic
+```
+
+---
+
+## One-Command Launch Sequence
+
+The entire system — Nervous System, Brain, and test suite — boots from a single invocation. Nothing needs to be running beforehand.
+
+```bash
+# First-time build (once)
+cd ros2_ws && bash build.sh && cd ..
+
+# Launch everything, run all tests, display results, clean up
+bash run_tests.sh
+```
+
+### What `run_tests.sh` does on instantiation
+
+```
+ 1. Source ROS2 Jazzy + colcon workspace
+ 2. Load .env (API keys)
+ 3. Launch NERVOUS SYSTEM:  ros2 launch cell_sim cell_sim.launch.py  (background)
+     → sensor_sim_node starts publishing PoseStamped at 5 Hz
+     → cell_state_node starts aggregating + serving /cell/get_state
+ 4. Launch BRAIN:  uvicorn cell_sim.api.app:app --port 8000  (background)
+     → ROS2Bridge spins up a daemon thread, connects to /cell/get_state
+     → FastAPI exposes /plan, /orchestrate, /health
+ 5. Wait for readiness:  poll GET /health until 200 OK
+ 6. Run TASK 1 tests:  ros2 topic list, echo, service call
+ 7. Run TASK 2 tests:  curl POST /plan
+ 8. Run TASK 3 tests:  curl POST /orchestrate (4 scenarios incl. z-bound rejection)
+ 9. Run TASK 4 tests:  extract cost/latency metrics from api_server.log
+10. Write everything to ros2_ws/test_results.log
+11. trap EXIT → kill background processes (clean shutdown)
+```
+
+### Docker alternative (also single-command)
+
+```bash
+cp .env.example .env   # fill in ANTHROPIC_API_KEY
+docker compose up --build
+# ros2_cell (Nervous System) and planner_api (Brain) start automatically
+# curl http://localhost:8000/plan to test
+```
+
+---
+
 ## Brain vs. Nervous System — Architectural Separation
 
 This project enforces a hard boundary between two process domains, analogous to the LangGraph "agentic graph" pattern versus real-time robot control:
@@ -67,7 +268,7 @@ This project enforces a hard boundary between two process domains, analogous to 
 
 | Principle | Brain (LLM) | Nervous System (ROS2) |
 |-----------|-------------|----------------------|
-| **Determinism** | Non-deterministic — LLM output varies per call | Fully deterministic — same input → same output |
+| **Determinism** | Non-deterministic — LLM output varies per call | Fully deterministic — same input, same output |
 | **Latency** | 5–10 seconds per Anthropic call | Sub-millisecond ROS2 pub/sub |
 | **Failure mode** | May produce invalid JSON, hallucinate poses, ignore constraints | Sensor noise is bounded and predictable |
 | **Trust level** | Zero trust — every output is validated before use | High trust — hard-coded physics simulation |
@@ -75,57 +276,22 @@ This project enforces a hard boundary between two process domains, analogous to 
 | **Update cycle** | Model swapped via env var, no robot restart needed | Firmware-like — changes require rebuild + test |
 
 The **safety gate** (`safety.py`) is the critical boundary enforcer. It is pure deterministic code, never an LLM call:
-- All MOVE steps must have `speed ≤ max_speed`
+- All MOVE steps must have `speed <= max_speed`
 - All `target_pose.z` must be within `[allowed_z_min, allowed_z_max]`
 - All MOVE steps must have a `target_pose`
 
-If the LLM violates any constraint, the orchestrator sends a **SAFETY REJECTION** with the exact violation list back to the LLM for one retry. If the retry also fails, a deterministic fallback plan (with clamped values) is returned — the robot never receives an unsafe command.
+If the Brain violates any constraint, the orchestrator sends a **SAFETY REJECTION** with the exact violation list back to the LLM for one retry. If the retry also fails, a deterministic fallback plan (with clamped values) is returned — the Nervous System never receives an unsafe command.
 
 ---
 
-## Quick Start (One Command)
+## Deployment & Build
+
+### Docker Compose (preferred)
 
 ```bash
-# 1. Set your API key
-export ANTHROPIC_API_KEY=sk-ant-...
-#    (or put it in .env — the script auto-loads it)
-
-# 2. Build the workspace (first time only)
-cd ros2_ws && bash build.sh && cd ..
-
-# 3. Run all tests (launches nodes, API, runs Tasks 1–4, shows results)
-bash run_tests.sh
-```
-
-The script handles everything automatically:
-1. Sources ROS2 Jazzy + workspace overlay
-2. Starts the Nervous System (sensor + cell state ROS2 nodes) in background
-3. Starts the Brain (FastAPI + Anthropic LLM client) in background
-4. Waits for all services to be healthy
-5. Executes every test from Tasks 1–4
-6. Writes the full log to `ros2_ws/test_results.log`
-7. Cleans up all background processes on exit (trap)
-
----
-
-## Docker Deployment
-
-```bash
-# Copy and fill in your API key
-cp .env.example .env
-# edit .env → set ANTHROPIC_API_KEY
-
-# Build and launch
+cp .env.example .env   # set ANTHROPIC_API_KEY
 docker compose up --build
-
-# In another terminal, test:
-curl -s http://localhost:8000/health
-curl -s -X POST http://localhost:8000/plan \
-  -H "Content-Type: application/json" \
-  -d '{"goal":"Pick the cube and place it in bin A"}'
 ```
-
-### Docker Services
 
 | Container | Role | Image Base | What it runs |
 |-----------|------|-----------|--------------|
@@ -138,11 +304,11 @@ Both containers share `ROS_DOMAIN_ID=42` on a Docker bridge network so the Brain
 
 | Concern | Implementation |
 |---------|---------------|
-| **Protocol** | HTTP/REST between user and Brain (port 8000). ROS2 DDS between Brain's bridge and Nervous System. In production, gRPC for user-facing API |
-| **Network failure** | 5s timeout on ROS2 service calls; 30s timeout on Anthropic API. Both configurable via env vars |
+| **Protocol** | HTTP/REST between user and Brain (port 8000). ROS2 DDS between Brain's bridge and Nervous System |
+| **Network failure** | 5s timeout on ROS2 service calls; 30s timeout on Anthropic API. Configurable via env vars |
 | **Inference timeout** | If the LLM doesn't respond within `LLM_TIMEOUT`, retried once, then falls back to deterministic safe-stop plan |
-| **Fallback strategy** | `deterministic_fallback()` in `llm_client.py` returns a hardcoded safe plan. The REJECTED state clamps all values to guarantee constraint compliance |
-| **Safe-stop plan** | On total failure: WAIT step with speed=0 — robot holds position, no motion commanded |
+| **Fallback strategy** | `deterministic_fallback()` returns a hardcoded safe plan. The REJECTED state clamps all values to guarantee constraint compliance |
+| **Safe-stop plan** | On total Brain failure: WAIT step with speed=0 — Nervous System holds position, no motion commanded |
 
 ### GPU / Cloud Inference Notes
 
@@ -164,11 +330,11 @@ playground/
 ├── .env                                   ← API keys (git-ignored)
 ├── .gitignore
 ├── docker-compose.yml                     ← Docker deployment
+├── run_tests.sh                           ← ONE COMMAND: launch + test + log
 ├── docker/
 │   ├── Dockerfile.ros2_cell               ← Nervous System container
 │   ├── Dockerfile.planner_api             ← Brain container
 │   └── entrypoint_api.sh
-├── run_tests.sh                           ← one-shot: launch + test + log
 └── ros2_ws/
     ├── build.sh                           ← workspace build script
     ├── test_results.log                   ← latest full test output
@@ -234,102 +400,6 @@ playground/
   }
 }
 ```
-
----
-
-## Test Results — All 4 Tasks Passed
-
-All tests were run with **real Anthropic Claude Sonnet 4 API calls**. Full log: `ros2_ws/test_results.log`
-
-### Task Pass/Fail Summary
-
-```
-✓ TASK 1 — ALL CHECKS PASSED    (ROS2 basics: topics, services, sensor simulation)
-✓ TASK 2 — ALL CHECKS PASSED    (FastAPI + ROS2 bridge + Anthropic LLM call)
-✓ TASK 3 — ALL CHECKS PASSED    (Multi-agent orchestration + safety gate)
-✓ TASK 4 — ALL CHECKS PASSED    (Docker deployment + cost/latency monitoring)
-
-╔══════════════════════════════════════════════════════════════════════╗
-║  ✓  ALL 4 TASKS PASSED — 2026-02-22 15:16:06                      ║
-║  LLM: anthropic claude-sonnet-4-20250514                           ║
-║  Safety: speed + z-bound constraints verified with real LLM         ║
-╚══════════════════════════════════════════════════════════════════════╝
-```
-
-### Task 1 — ROS2 Basics (Nervous System)
-
-Verified live:
-
-```
-Active ROS2 nodes:   /sensor_sim_node, /cell_state_node, /api_bridge_node
-Topics:              /perception/object_pose, /cell/state
-Services:            /cell/get_state
-
-ros2 service call /cell/get_state std_srvs/srv/Trigger "{}"
-→ success=True, message='{"timestamp":"...","object_pose":{"x":0.097715,"y":-0.021253,"z":0.05,...},"frame_id":"world"}'
-```
-
-### Task 2 — API + LLM Call (Brain ↔ Nervous System)
-
-```
-POST /plan → Anthropic Claude → 7-step pick-and-place plan
-  LLM response in 10.32s
-  Anthropic usage: tokens_in=446  tokens_out=760  est_cost=$0.012738
-```
-
-### Task 3 — Orchestrator + Safety Gate (Brain with Deterministic Guard)
-
-| Test | Constraint | Attempt 1 | Attempt 2 | Result |
-|------|-----------|-----------|-----------|--------|
-| 3a — generous | max_speed=0.5, z_max=1.0 | PASS | — | `passed_on_attempt: 1` |
-| 3b — tight speed | max_speed=0.2, z_max=1.0 | PASS | — | `passed_on_attempt: 1` |
-| **3c — z-bound** | **z_max=0.08, goal demands z=0.5** | **REJECTED** | **CORRECTED** | **`passed_on_attempt: 2`** |
-| 3d — tight z | z_max=0.03 | PASS | — | `passed_on_attempt: 1` |
-
-**Z-bound rejection evidence (Task 3c):**
-
-```
-[75c23fe2059c] State → PLANNING  (attempt 0)
-[75c23fe2059c] LLM call attempt 1/2  provider=anthropic
-  Anthropic usage  tokens_in=495  tokens_out=285  est_cost=$0.005760
-[75c23fe2059c] LLM response in 5.24s  provider=anthropic
-[75c23fe2059c] State → SAFETY_CHECK  (attempt 1)
-  Safety gate found 1 violation(s):
-    • Step 1 (MOVE): target z=0.5 above allowed_z_max 0.08
-[75c23fe2059c] State → REPLANNING  (attempt 1)
-[75c23fe2059c] LLM call attempt 1/2  provider=anthropic
-  Anthropic usage  tokens_in=561  tokens_out=281  est_cost=$0.005898
-[75c23fe2059c] LLM response in 5.30s  provider=anthropic
-[75c23fe2059c] State → SAFETY_CHECK  (attempt 2)
-  Safety gate: all checks passed
-[75c23fe2059c] State → ACCEPTED  (attempt 2)
-[75c23fe2059c] Plan ACCEPTED on attempt 2
-```
-
-### Task 4 — Deployment & Anthropic Cost/Latency Metrics
-
-**Latency per Anthropic call:**
-
-```
-[6f76e2faebcd] LLM response in 10.32s  provider=anthropic
-[c8c6d45c5d54] LLM response in  9.78s  provider=anthropic
-[6fdafb145f18] LLM response in  9.02s  provider=anthropic
-[75c23fe2059c] LLM response in  5.24s  provider=anthropic
-[75c23fe2059c] LLM response in  5.30s  provider=anthropic  (replan)
-[f9715f9de5fe] LLM response in  6.54s  provider=anthropic
-```
-
-**Token usage & cost:**
-
-| Request ID | Tokens in | Tokens out | Est. Cost |
-|------------|-----------|------------|-----------|
-| 6f76e2fa | 446 | 760 | $0.0127 |
-| c8c6d45c | 446 | 757 | $0.0127 |
-| 6fdafb14 | 446 | 756 | $0.0127 |
-| 75c23fe2 (plan) | 495 | 285 | $0.0058 |
-| 75c23fe2 (replan) | 561 | 281 | $0.0059 |
-| f9715f9d | 453 | 405 | $0.0074 |
-| **Total** | **2,847** | **3,244** | **$0.057** |
 
 ---
 
